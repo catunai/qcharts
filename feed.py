@@ -27,62 +27,24 @@ def create_date_aggregation(cte, date_column, date_type_literal):
 def create_attempt_details_aggregation(cte, date_column, date_type_literal):
     """Create aggregations for attempt details (melted format)"""
     
-    # Define the mapping of result values to series names
-    series_mapping = {
-        'Answering Machine - No Message': 'Answering Machine - No Message',
-        'Sale - Policy': 'Sale - Policy',
-        'Call back scheduled': 'Call back scheduled',
-        'Too Expensive': 'Too expensive',
-        'Inbound - extension': 'Inbound - extension',
-        'No Reason Provided': 'No Reason Provided',
-        'Purchased insurance elsewhere': 'Purchased insurance elsewhere',
-        'No Product Need': 'No Product Need',
-        'Bad phone number': 'Bad phone number',
-        'Customer Policy not up for renewal': 'Customer Policy not up for renewal',
-        'Customer satisfied with current insurer': 'Customer satisfied with current insurer',
-        'Declined by Insurer for other reason': 'Declined by Insurer for other reason',
-        'Active Follow-up Present': 'Active Follow-up Present',
-        'Other': 'Other'
-    }
-    
-    # Create a union of all series
-    series_queries = []
-    
-    for result_value, series_name in series_mapping.items():
-        query = select(
-            literal_column(f"'{date_type_literal}'").label("date_type"),
-            date_column.label("date_value"),
-            cte.c.product.label("product"),
-            cte.c.quote_channel.label("quote_channel"),
-            literal_column(f"'{series_name}'").label("series_name"),
-            func.sum(case((cte.c.result == result_value, 1), else_=0)).label("series_value")
-        ).select_from(
-            cte
-        ).group_by(
-            date_column,
-            cte.c.product,
-            cte.c.quote_channel
-        )
-        series_queries.append(query)
-    
-    # Add "None" series for NULL results
-    none_query = select(
+    # Main query - group by result (NULL values become 'None')
+    main_query = select(
         literal_column(f"'{date_type_literal}'").label("date_type"),
         date_column.label("date_value"),
         cte.c.product.label("product"),
         cte.c.quote_channel.label("quote_channel"),
-        literal_column("'None'").label("series_name"),
-        func.sum(case((cte.c.result.is_(None), 1), else_=0)).label("series_value")
+        func.coalesce(cte.c.result, 'None').label("series_name"),
+        func.count(cte.c.quote_number).label("series_value")
     ).select_from(
         cte
     ).group_by(
         date_column,
         cte.c.product,
-        cte.c.quote_channel
+        cte.c.quote_channel,
+        cte.c.result
     )
-    series_queries.append(none_query)
     
-    # Add "Total" series (count all rows)
+    # Total series (count all rows)
     total_query = select(
         literal_column(f"'{date_type_literal}'").label("date_type"),
         date_column.label("date_value"),
@@ -97,9 +59,8 @@ def create_attempt_details_aggregation(cte, date_column, date_type_literal):
         cte.c.product,
         cte.c.quote_channel
     )
-    series_queries.append(total_query)
     
-    return union_all(*series_queries)
+    return union_all(main_query, total_query)
 
 
 def build_repdata_table(db_session, etl_session, engine, metadata, Quote, Outbound):
