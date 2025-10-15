@@ -164,17 +164,27 @@ def build_repdata_table(db_session, etl_session, engine, metadata, Quote, Outbou
         year_stmt
     ).cte('aggregated')
 
-    # Create all aggregation levels
-    # GROUPING SETS generates:
-    #   - Per product and channel
-    #   - All products (grouped by channel)
-    #   - All channels (grouped by product)  
-    #   - Grand totals (all products and channels)
-    final_stmt = select(
+    # Create all aggregation levels using explicit UNION queries
+    # Level 1: Granular (product, channel)
+    level1_stmt = select(
         aggregated_stmt.c.date_type,
         aggregated_stmt.c.date_value,
-        func.coalesce(aggregated_stmt.c.product, 'All').label("product"),
-        func.coalesce(aggregated_stmt.c.quote_channel, 'All').label("quote_channel"),
+        aggregated_stmt.c.product,
+        aggregated_stmt.c.quote_channel,
+        aggregated_stmt.c.sale_count,
+        aggregated_stmt.c.quote_count,
+        aggregated_stmt.c.sum_attempts,
+        aggregated_stmt.c.new_leads_given,
+        aggregated_stmt.c.new_leads_contacted,
+        aggregated_stmt.c.leads_no_recontact_needed
+    ).select_from(aggregated_stmt)
+    
+    # Level 2: All products (grouped by channel)
+    level2_stmt = select(
+        aggregated_stmt.c.date_type,
+        aggregated_stmt.c.date_value,
+        literal_column("'All'").label("product"),
+        aggregated_stmt.c.quote_channel,
         func.sum(aggregated_stmt.c.sale_count).label("sale_count"),
         func.sum(aggregated_stmt.c.quote_count).label("quote_count"),
         func.sum(aggregated_stmt.c.sum_attempts).label("sum_attempts"),
@@ -184,7 +194,56 @@ def build_repdata_table(db_session, etl_session, engine, metadata, Quote, Outbou
     ).select_from(
         aggregated_stmt
     ).group_by(
-        text("GROUPING SETS ((date_type, date_value, product, quote_channel), (date_type, date_value, quote_channel), (date_type, date_value, product), (date_type, date_value))")
+        aggregated_stmt.c.date_type,
+        aggregated_stmt.c.date_value,
+        aggregated_stmt.c.quote_channel
+    )
+    
+    # Level 3: All channels (grouped by product)
+    level3_stmt = select(
+        aggregated_stmt.c.date_type,
+        aggregated_stmt.c.date_value,
+        aggregated_stmt.c.product,
+        literal_column("'All'").label("quote_channel"),
+        func.sum(aggregated_stmt.c.sale_count).label("sale_count"),
+        func.sum(aggregated_stmt.c.quote_count).label("quote_count"),
+        func.sum(aggregated_stmt.c.sum_attempts).label("sum_attempts"),
+        func.sum(aggregated_stmt.c.new_leads_given).label("new_leads_given"),
+        func.sum(aggregated_stmt.c.new_leads_contacted).label("new_leads_contacted"),
+        func.sum(aggregated_stmt.c.leads_no_recontact_needed).label("leads_no_recontact_needed")
+    ).select_from(
+        aggregated_stmt
+    ).group_by(
+        aggregated_stmt.c.date_type,
+        aggregated_stmt.c.date_value,
+        aggregated_stmt.c.product
+    )
+    
+    # Level 4: Grand totals (all products and channels)
+    level4_stmt = select(
+        aggregated_stmt.c.date_type,
+        aggregated_stmt.c.date_value,
+        literal_column("'All'").label("product"),
+        literal_column("'All'").label("quote_channel"),
+        func.sum(aggregated_stmt.c.sale_count).label("sale_count"),
+        func.sum(aggregated_stmt.c.quote_count).label("quote_count"),
+        func.sum(aggregated_stmt.c.sum_attempts).label("sum_attempts"),
+        func.sum(aggregated_stmt.c.new_leads_given).label("new_leads_given"),
+        func.sum(aggregated_stmt.c.new_leads_contacted).label("new_leads_contacted"),
+        func.sum(aggregated_stmt.c.leads_no_recontact_needed).label("leads_no_recontact_needed")
+    ).select_from(
+        aggregated_stmt
+    ).group_by(
+        aggregated_stmt.c.date_type,
+        aggregated_stmt.c.date_value
+    )
+    
+    # Union all levels and order
+    final_stmt = union_all(
+        level1_stmt,
+        level2_stmt,
+        level3_stmt,
+        level4_stmt
     ).order_by(
         text('date_type'),
         text('date_value'),
@@ -255,18 +314,73 @@ def build_attempt_details_table(db_session, dfw_cte, metadata, inspector):
         year_attempt_stmt
     ).cte('attempt_aggregated')
     
-    # Apply GROUPING SETS for all aggregation levels
-    attempt_final_stmt = select(
+    # Apply explicit UNION for all aggregation levels
+    # Level 1: Granular (product, channel, series_name)
+    attempt_level1_stmt = select(
         attempt_aggregated_stmt.c.date_type,
         attempt_aggregated_stmt.c.date_value,
-        func.coalesce(attempt_aggregated_stmt.c.product, 'All').label("product"),
-        func.coalesce(attempt_aggregated_stmt.c.quote_channel, 'All').label("quote_channel"),
+        attempt_aggregated_stmt.c.product,
+        attempt_aggregated_stmt.c.quote_channel,
+        attempt_aggregated_stmt.c.series_name,
+        attempt_aggregated_stmt.c.series_value
+    ).select_from(attempt_aggregated_stmt)
+    
+    # Level 2: All products (grouped by channel, series_name)
+    attempt_level2_stmt = select(
+        attempt_aggregated_stmt.c.date_type,
+        attempt_aggregated_stmt.c.date_value,
+        literal_column("'All'").label("product"),
+        attempt_aggregated_stmt.c.quote_channel,
         attempt_aggregated_stmt.c.series_name,
         func.sum(attempt_aggregated_stmt.c.series_value).label("series_value")
     ).select_from(
         attempt_aggregated_stmt
     ).group_by(
-        text("GROUPING SETS ((date_type, date_value, product, quote_channel, series_name), (date_type, date_value, quote_channel, series_name), (date_type, date_value, product, series_name), (date_type, date_value, series_name))")
+        attempt_aggregated_stmt.c.date_type,
+        attempt_aggregated_stmt.c.date_value,
+        attempt_aggregated_stmt.c.quote_channel,
+        attempt_aggregated_stmt.c.series_name
+    )
+    
+    # Level 3: All channels (grouped by product, series_name)
+    attempt_level3_stmt = select(
+        attempt_aggregated_stmt.c.date_type,
+        attempt_aggregated_stmt.c.date_value,
+        attempt_aggregated_stmt.c.product,
+        literal_column("'All'").label("quote_channel"),
+        attempt_aggregated_stmt.c.series_name,
+        func.sum(attempt_aggregated_stmt.c.series_value).label("series_value")
+    ).select_from(
+        attempt_aggregated_stmt
+    ).group_by(
+        attempt_aggregated_stmt.c.date_type,
+        attempt_aggregated_stmt.c.date_value,
+        attempt_aggregated_stmt.c.product,
+        attempt_aggregated_stmt.c.series_name
+    )
+    
+    # Level 4: Grand totals (all products and channels, grouped by series_name)
+    attempt_level4_stmt = select(
+        attempt_aggregated_stmt.c.date_type,
+        attempt_aggregated_stmt.c.date_value,
+        literal_column("'All'").label("product"),
+        literal_column("'All'").label("quote_channel"),
+        attempt_aggregated_stmt.c.series_name,
+        func.sum(attempt_aggregated_stmt.c.series_value).label("series_value")
+    ).select_from(
+        attempt_aggregated_stmt
+    ).group_by(
+        attempt_aggregated_stmt.c.date_type,
+        attempt_aggregated_stmt.c.date_value,
+        attempt_aggregated_stmt.c.series_name
+    )
+    
+    # Union all levels and order
+    attempt_final_stmt = union_all(
+        attempt_level1_stmt,
+        attempt_level2_stmt,
+        attempt_level3_stmt,
+        attempt_level4_stmt
     ).order_by(
         text('date_type'),
         text('date_value'),
