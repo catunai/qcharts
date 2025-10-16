@@ -12,8 +12,8 @@ def create_date_aggregation(cte, date_column, date_type_literal):
         func.sum(case((cte.c.result == "Sale - Policy", 1), else_=0)).label("sale_count"),
         func.count(cte.c.quote_number).label("quote_count"),
         func.sum(cte.c.attempt_ind).label("sum_attempts"),
-        func.sum(case((cte.c.new_ind == 1, 1), else_=0)).label("new_leads_given"),
-        func.sum(case((cte.c.new_ind == 1, cte.c.attempt_ind), else_=0)).label("new_leads_contacted"),
+        func.sum(case((cte.c.attempt_no == 1, 1), else_=0)).label("new_leads_given"),
+        func.sum(case((cte.c.attempt_no == 1, cte.c.attempt_ind), else_=0)).label("new_leads_contacted"),
         func.sum(case((cte.c.result == "Sale - No recontact", 1), else_=0)).label("leads_no_recontact_needed")
     ).select_from(
         cte
@@ -143,13 +143,10 @@ def build_repdata_table(db_session, etl_session, engine, metadata, Quote, Outbou
     # Add new lead indicator using row_number
     dfw = select(
         outbound_non_organic,
-        case(
-            (func.row_number().over(
+            func.row_number().over(
                 partition_by=outbound_non_organic.c.quote_number,
-                order_by=outbound_non_organic.c.created_at_dtm
-            ) == 1, 1), 
-            else_=0
-        ).label("new_ind")
+                order_by=outbound_non_organic.c.assigned_at_dtm
+            ).label("attempt_no")
     ).cte('dfw')
 
     # Create aggregations by week/month/year using helper function
