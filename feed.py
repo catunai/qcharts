@@ -63,6 +63,49 @@ def create_attempt_details_aggregation(cte, date_column, date_type_literal):
     return union_all(main_query, total_query)
 
 
+def add_rollup_level(base_cte, columns_to_group, column_to_rollup, numeric_columns):
+    """
+    Add an aggregation level by rolling up a specific column to 'All'.
+    
+    Returns a UNION of the original data and the aggregated data where 
+    column_to_rollup is replaced with 'All' and numeric columns are summed.
+    
+    Args:
+        base_cte: The input CTE/subquery to aggregate
+        columns_to_group: List of column names to preserve (group by these)
+        column_to_rollup: Column name to replace with 'All' 
+        numeric_columns: List of column names to sum during aggregation
+    
+    Returns:
+        UNION of base_cte and aggregated version
+    """
+    # Get column references from the CTE
+    base_columns = base_cte.c
+    
+    # Build the aggregated query
+    select_items = []
+    
+    # Add grouping columns as-is
+    for col_name in columns_to_group:
+        select_items.append(getattr(base_columns, col_name).label(col_name))
+    
+    # Add the rollup column as 'All'
+    select_items.append(literal_column("'All'").label(column_to_rollup))
+    
+    # Add summed numeric columns
+    for col_name in numeric_columns:
+        select_items.append(func.sum(getattr(base_columns, col_name)).label(col_name))
+    
+    # Create the aggregated statement
+    aggregated_stmt = select(*select_items).select_from(base_cte).group_by(*columns_to_group)
+    
+    # Union with original
+    return union_all(
+        select(*[getattr(base_columns, col) for col in columns_to_group + [column_to_rollup] + numeric_columns]),
+        aggregated_stmt
+    ).cte(f'{base_cte.name}_with_{column_to_rollup}_rollup')
+
+
 def build_repdata_table(db_session, etl_session, engine, metadata, Quote, Outbound):
 
     inspector = inspect(engine)
@@ -154,94 +197,45 @@ def build_repdata_table(db_session, etl_session, engine, metadata, Quote, Outbou
     month_stmt = create_date_aggregation(dfw, dfw.c.month_end_date, 'month')
     year_stmt = create_date_aggregation(dfw, dfw.c.year_end_date, 'year')
 
-    # Union all time periods - using CTE for efficiency since referenced 4 times
+    # Union all time periods - using CTE for efficiency
     aggregated_stmt = union_all(
         week_stmt,
         month_stmt,
         year_stmt
     ).cte('aggregated')
 
-    # Create all aggregation levels using explicit UNION queries
-    # Level 1: Granular (product, channel)
-    level1_stmt = select(
-        aggregated_stmt.c.date_type,
-        aggregated_stmt.c.date_value,
-        aggregated_stmt.c.product,
-        aggregated_stmt.c.quote_channel,
-        aggregated_stmt.c.sale_count,
-        aggregated_stmt.c.quote_count,
-        aggregated_stmt.c.sum_attempts,
-        aggregated_stmt.c.new_leads_given,
-        aggregated_stmt.c.new_leads_contacted,
-        aggregated_stmt.c.leads_no_recontact_needed
-    ).select_from(aggregated_stmt)
+    # Use iterative rollup approach to create all aggregation levels
+    # Start with base aggregation (Level 1: product, channel)
+    numeric_columns = [
+        'sale_count', 
+        'quote_count', 
+        'sum_attempts',
+        'new_leads_given', 
+        'new_leads_contacted', 
+        'leads_no_recontact_needed'
+    ]
     
-    # Level 2: All products (grouped by channel)
-    level2_stmt = select(
-        aggregated_stmt.c.date_type,
-        aggregated_stmt.c.date_value,
-        literal_column("'All'").label("product"),
-        aggregated_stmt.c.quote_channel,
-        func.sum(aggregated_stmt.c.sale_count).label("sale_count"),
-        func.sum(aggregated_stmt.c.quote_count).label("quote_count"),
-        func.sum(aggregated_stmt.c.sum_attempts).label("sum_attempts"),
-        func.sum(aggregated_stmt.c.new_leads_given).label("new_leads_given"),
-        func.sum(aggregated_stmt.c.new_leads_contacted).label("new_leads_contacted"),
-        func.sum(aggregated_stmt.c.leads_no_recontact_needed).label("leads_no_recontact_needed")
-    ).select_from(
-        aggregated_stmt
-    ).group_by(
-        aggregated_stmt.c.date_type,
-        aggregated_stmt.c.date_value,
-        aggregated_stmt.c.quote_channel
+    # Iteratively add rollup levels
+    result_cte = aggregated_stmt
+    
+    # Add product rollup (creates levels 1 + 2)
+    result_cte = add_rollup_level(
+        result_cte,
+        columns_to_group=['date_type', 'date_value', 'quote_channel'],
+        column_to_rollup='product',
+        numeric_columns=numeric_columns
     )
     
-    # Level 3: All channels (grouped by product)
-    level3_stmt = select(
-        aggregated_stmt.c.date_type,
-        aggregated_stmt.c.date_value,
-        aggregated_stmt.c.product,
-        literal_column("'All'").label("quote_channel"),
-        func.sum(aggregated_stmt.c.sale_count).label("sale_count"),
-        func.sum(aggregated_stmt.c.quote_count).label("quote_count"),
-        func.sum(aggregated_stmt.c.sum_attempts).label("sum_attempts"),
-        func.sum(aggregated_stmt.c.new_leads_given).label("new_leads_given"),
-        func.sum(aggregated_stmt.c.new_leads_contacted).label("new_leads_contacted"),
-        func.sum(aggregated_stmt.c.leads_no_recontact_needed).label("leads_no_recontact_needed")
-    ).select_from(
-        aggregated_stmt
-    ).group_by(
-        aggregated_stmt.c.date_type,
-        aggregated_stmt.c.date_value,
-        aggregated_stmt.c.product
+    # Add channel rollup (creates levels 1 + 2 + 3 + 4)
+    result_cte = add_rollup_level(
+        result_cte,
+        columns_to_group=['date_type', 'date_value', 'product'],
+        column_to_rollup='quote_channel',
+        numeric_columns=numeric_columns
     )
     
-    # Level 4: Grand totals (all products and channels)
-    level4_stmt = select(
-        aggregated_stmt.c.date_type,
-        aggregated_stmt.c.date_value,
-        literal_column("'All'").label("product"),
-        literal_column("'All'").label("quote_channel"),
-        func.sum(aggregated_stmt.c.sale_count).label("sale_count"),
-        func.sum(aggregated_stmt.c.quote_count).label("quote_count"),
-        func.sum(aggregated_stmt.c.sum_attempts).label("sum_attempts"),
-        func.sum(aggregated_stmt.c.new_leads_given).label("new_leads_given"),
-        func.sum(aggregated_stmt.c.new_leads_contacted).label("new_leads_contacted"),
-        func.sum(aggregated_stmt.c.leads_no_recontact_needed).label("leads_no_recontact_needed")
-    ).select_from(
-        aggregated_stmt
-    ).group_by(
-        aggregated_stmt.c.date_type,
-        aggregated_stmt.c.date_value
-    )
-    
-    # Union all levels and order
-    final_stmt = union_all(
-        level1_stmt,
-        level2_stmt,
-        level3_stmt,
-        level4_stmt
-    ).order_by(
+    # Final statement with ordering
+    final_stmt = select(result_cte).order_by(
         text('date_type'),
         text('date_value'),
         text('product'),
@@ -311,74 +305,31 @@ def build_attempt_details_table(db_session, dfw_cte, metadata, inspector):
         year_attempt_stmt
     ).cte('attempt_aggregated')
     
-    # Apply explicit UNION for all aggregation levels
-    # Level 1: Granular (product, channel, series_name)
-    attempt_level1_stmt = select(
-        attempt_aggregated_stmt.c.date_type,
-        attempt_aggregated_stmt.c.date_value,
-        attempt_aggregated_stmt.c.product,
-        attempt_aggregated_stmt.c.quote_channel,
-        attempt_aggregated_stmt.c.series_name,
-        attempt_aggregated_stmt.c.series_value
-    ).select_from(attempt_aggregated_stmt)
+    # Use iterative rollup approach to create all aggregation levels
+    # Note: series_name is NOT rolled up, it's kept in all aggregations
+    numeric_columns = ['series_value']
     
-    # Level 2: All products (grouped by channel, series_name)
-    attempt_level2_stmt = select(
-        attempt_aggregated_stmt.c.date_type,
-        attempt_aggregated_stmt.c.date_value,
-        literal_column("'All'").label("product"),
-        attempt_aggregated_stmt.c.quote_channel,
-        attempt_aggregated_stmt.c.series_name,
-        func.sum(attempt_aggregated_stmt.c.series_value).label("series_value")
-    ).select_from(
-        attempt_aggregated_stmt
-    ).group_by(
-        attempt_aggregated_stmt.c.date_type,
-        attempt_aggregated_stmt.c.date_value,
-        attempt_aggregated_stmt.c.quote_channel,
-        attempt_aggregated_stmt.c.series_name
+    # Iteratively add rollup levels
+    result_cte = attempt_aggregated_stmt
+    
+    # Add product rollup (creates levels 1 + 2)
+    result_cte = add_rollup_level(
+        result_cte,
+        columns_to_group=['date_type', 'date_value', 'quote_channel', 'series_name'],
+        column_to_rollup='product',
+        numeric_columns=numeric_columns
     )
     
-    # Level 3: All channels (grouped by product, series_name)
-    attempt_level3_stmt = select(
-        attempt_aggregated_stmt.c.date_type,
-        attempt_aggregated_stmt.c.date_value,
-        attempt_aggregated_stmt.c.product,
-        literal_column("'All'").label("quote_channel"),
-        attempt_aggregated_stmt.c.series_name,
-        func.sum(attempt_aggregated_stmt.c.series_value).label("series_value")
-    ).select_from(
-        attempt_aggregated_stmt
-    ).group_by(
-        attempt_aggregated_stmt.c.date_type,
-        attempt_aggregated_stmt.c.date_value,
-        attempt_aggregated_stmt.c.product,
-        attempt_aggregated_stmt.c.series_name
+    # Add channel rollup (creates levels 1 + 2 + 3 + 4)
+    result_cte = add_rollup_level(
+        result_cte,
+        columns_to_group=['date_type', 'date_value', 'product', 'series_name'],
+        column_to_rollup='quote_channel',
+        numeric_columns=numeric_columns
     )
     
-    # Level 4: Grand totals (all products and channels, grouped by series_name)
-    attempt_level4_stmt = select(
-        attempt_aggregated_stmt.c.date_type,
-        attempt_aggregated_stmt.c.date_value,
-        literal_column("'All'").label("product"),
-        literal_column("'All'").label("quote_channel"),
-        attempt_aggregated_stmt.c.series_name,
-        func.sum(attempt_aggregated_stmt.c.series_value).label("series_value")
-    ).select_from(
-        attempt_aggregated_stmt
-    ).group_by(
-        attempt_aggregated_stmt.c.date_type,
-        attempt_aggregated_stmt.c.date_value,
-        attempt_aggregated_stmt.c.series_name
-    )
-    
-    # Union all levels and order
-    attempt_final_stmt = union_all(
-        attempt_level1_stmt,
-        attempt_level2_stmt,
-        attempt_level3_stmt,
-        attempt_level4_stmt
-    ).order_by(
+    # Final statement with ordering
+    attempt_final_stmt = select(result_cte).order_by(
         text('date_type'),
         text('date_value'),
         text('product'),
