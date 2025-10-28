@@ -336,7 +336,7 @@ const periodColumns = computed(() => {
       const formattedDate = periodEnd.format('YYYY-MM-DD')
       
       // Only add if we haven't already added this period and it's within range
-      if (!periods.find(p => p.name === formattedDate) && periodEnd.isSameOrBefore(endDate)) {
+      if (!periods.find(p => p.name === formattedDate) && (periodEnd.isBefore(endDate) || periodEnd.isSame(endDate, 'day'))) {
         periods.push({
           name: formattedDate,
           label: formattedDate,
