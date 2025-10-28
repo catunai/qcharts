@@ -187,7 +187,11 @@
               <q-date
                 v-model="selectedStartDate"
                 mask="YYYY-MM-DD"
-                :options="date => date <= selectedEndDate || !selectedEndDate"
+                :options="date => {
+                  const today = new Date().toISOString().split('T')[0]
+                  const maxDate = selectedEndDate || today
+                  return date <= maxDate && date <= today
+                }"
               />
             </div>
             <div class="col-6">
@@ -195,7 +199,11 @@
               <q-date
                 v-model="selectedEndDate"
                 mask="YYYY-MM-DD"
-                :options="date => date >= selectedStartDate || !selectedStartDate"
+                :options="date => {
+                  const today = new Date().toISOString().split('T')[0]
+                  const minDate = selectedStartDate || '1900-01-01'
+                  return date >= minDate && date <= today
+                }"
               />
             </div>
           </div>
