@@ -187,7 +187,7 @@
               <q-date
                 v-model="selectedStartDate"
                 mask="YYYY-MM-DD"
-                :options="date => date <= new Date().toISOString().split('T')[0]"
+                :options="date => new Date(date.replace(/\//g, '-')) <= new Date()"
               />
             </div>
             <div class="col-6">
@@ -195,7 +195,7 @@
               <q-date
                 v-model="selectedEndDate"
                 mask="YYYY-MM-DD"
-                :options="date => date <= new Date().toISOString().split('T')[0]"
+                :options="date => new Date(date.replace(/\//g, '-')) <= new Date()"
               />
             </div>
           </div>
