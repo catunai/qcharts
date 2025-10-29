@@ -187,11 +187,7 @@
               <q-date
                 v-model="selectedStartDate"
                 mask="YYYY-MM-DD"
-                :options="date => {
-                  const today = new Date().toISOString().split('T')[0]
-                  const maxDate = selectedEndDate || today
-                  return date <= maxDate && date <= today
-                }"
+                :options="date => date <= new Date().toISOString().split('T')[0]"
               />
             </div>
             <div class="col-6">
@@ -199,11 +195,7 @@
               <q-date
                 v-model="selectedEndDate"
                 mask="YYYY-MM-DD"
-                :options="date => {
-                  const today = new Date().toISOString().split('T')[0]
-                  const minDate = selectedStartDate || '1900-01-01'
-                  return date >= minDate && date <= today
-                }"
+                :options="date => date <= new Date().toISOString().split('T')[0]"
               />
             </div>
           </div>
@@ -937,6 +929,13 @@ const openDateRangePicker = () => {
 
 const applyDateRange = () => {
   if (selectedStartDate.value && selectedEndDate.value) {
+    // Validate that start date is not after end date
+    if (dayjs(selectedStartDate.value).isAfter(dayjs(selectedEndDate.value))) {
+      // Show error - could use Quasar notify if available
+      loadError.value = 'Start date must be before or equal to end date'
+      return
+    }
+    
     useDateRange.value = true
     showDateRangePicker.value = false
     fetchAllData()
