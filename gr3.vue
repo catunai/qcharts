@@ -314,6 +314,38 @@ const sortedReportData = computed(() => {
   )
 })
 
+// Filtered report data that matches the calculated period columns
+const filteredReportData = computed(() => {
+  // Get the list of period dates from periodColumns
+  const periodDates = periodColumns.value.map(col => col.name)
+  
+  // Create a complete dataset with all periods
+  return periodDates.map(dateStr => {
+    // Look for existing data for this period
+    const existingData = reportData.value.find(
+      item => dayjs(item.date_value).format('YYYY-MM-DD') === dateStr
+    )
+    
+    // If data exists, return it; otherwise create a record with zeros
+    if (existingData) {
+      return existingData
+    } else {
+      return {
+        date_value: dateStr,
+        date_type: selectedDateType.value,
+        product: selectedProduct.value,
+        quote_channel: selectedChannel.value,
+        quote_count: 0,
+        sale_count: 0,
+        sum_attempts: 0,
+        new_leads_given: 0,
+        new_leads_contacted: 0,
+        leads_no_recontact_needed: 0
+      }
+    }
+  })
+})
+
 // Dynamically computed periods based on custom date range or last 5 dates
 const periodColumns = computed(() => {
   const periods = []
@@ -577,7 +609,7 @@ const updateCharts = () => {
     return
   }
 
-  const data = sortedReportData.value
+  const data = filteredReportData.value
   const categories = data.map(item => dayjs(item.date_value).format('YYYY-MM-DD'))
   const salesSeries = data.map(item => item.sale_count ?? 0)
   const quoteSeries = data.map(item => item.quote_count ?? 0)
